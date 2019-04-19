@@ -1,0 +1,127 @@
+#!/bin/sh
+
+#   Copyright 2019 Federico Kircheis
+#
+#   Licensed under the Apache License, Version 2.0 (the "License");
+#   you may not use this file except in compliance with the License.
+#   You may obtain a copy of the License at
+#
+#       http://www.apache.org/licenses/LICENSE-2.0
+#
+#   Unless required by applicable law or agreed to in writing, software
+#   distributed under the License is distributed on an "AS IS" BASIS,
+#   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+#   See the License for the specific language governing permissions and
+#   limitations under the License.
+
+set -o errexit
+set -o nounset
+
+# FIXME: printf '"%s" ' "$@" works with spaces, but breaks on parameters with " since it always quotes, but posix printf does not have %q
+
+start_master(){
+  FUZZENV="$1"; shift;
+  MASTER="$1"; shift;
+  tmux new-window -n "$MASTER" -t "$FUZZENV";
+  tmux send-keys -t "$FUZZENV":"$MASTER"  " afl-fuzz -M \"$MASTER\" $(printf '"%s" ' "$@")" C-m;
+}
+
+start_slave(){
+  FUZZENV="$1"; shift;
+  SLAVE="$1"; shift;
+  tmux new-window -n "$SLAVE" -t "$FUZZENV";
+  tmux send-keys -t "$FUZZENV":"$SLAVE"  " afl-fuzz -S \"$SLAVE\" $(printf '"%s" ' "$@")" C-m;
+}
+
+start_fuzz_env(){
+  FUZZENV="$1"; shift;
+  AFL_START_MASTER_INSTANCE="$1"; shift;
+  SLAVES="$1"; shift;
+  SLAVES="$((SLAVES-1))"; # For master, or slave0
+  AFL_SLEEP="$1"; shift;
+  printf 'It will take approx %s seconds to start the server' "$SLAVES" >&2;
+  tmux new-session -s "$FUZZENV" -n tmp -d;
+  if "$AFL_START_MASTER_INSTANCE"; then
+    BEGIN=1;
+    start_master "$FUZZENV" 'master' "$@";
+  else
+    BEGIN=0;
+  fi
+  for TEST_ID in $(seq -f %02.f $BEGIN "$SLAVES"); do :;
+    printf 'Starting %s of %s' "$TEST_ID" "$SLAVES">&2;
+    sleep "$AFL_SLEEP";
+    start_slave "$FUZZENV" "s$TEST_ID" "$@";
+  done
+  tmux kill-window -t "$FUZZENV":tmp
+  printf 'Attach with tmux a -t "%s"\n' "$FUZZENV";
+  printf 'Kill with tmux kill-session -t "%s"\n' "$FUZZENV";
+  printf 'Check status with afl-whatsup on the output directory\n';
+}
+
+help(){
+  # FIXME: afl-fuzz exits with error
+  afl-fuzz | sed -e '/-S id/d' \
+                 -e '1s;^;afl-pfuzz, based on ;' -e '3s;afl-fuzz;afl-pfuzz;' \
+                 -e '/  -o dir/a\  --session s   - name of the session (afl-pfuzz only, needs to be unique)' \
+                 -e '/  -f file/i\  -s/--sleep s  - number of seconds to sleep (afl-pfuzz only, default value is 0.5) while creating instances\n  -j/--jobs nr  - number of jobs (afl-pfuzz only, defaul value queried with afl-gotcpu)' \
+                 -e '$aKnown bugs (afl-pfuzz only):\n * If a parameter contains a \" (double quotation mark), it will not get passed correctly to afl-fuzz.';
+}
+
+is_help_param(){
+  [ "$1" = "-h" ] || [ "$1" = "--help" ] || [ "$1" = "h" ] || [ "$1" = "help" ] || [ "$1" = "?" ];
+}
+
+main(){
+  [ $# -eq 0 ] && set -- "$@" '?';
+
+  NEXT_IS_AFL_MAX_JOB=false;
+  NEXT_IS_AFL_SESSION=false;
+  NEXT_IS_AFL_SLEEP=false;
+  AFL_SLEEP="0.5";  # otherwise afl-fuzz takes wrong processor because previous instance did not finished loading
+  AFL_START_MASTER_INSTANCE=false;
+  PARSE=true;
+  for key in "$@"; do :;
+    shift
+    if ! $PARSE; then :;
+      set -- "$@" "$key";
+    else
+    # FIXME: issue error on -M / -S
+      if   $NEXT_IS_AFL_MAX_JOB; then :;
+        AFL_NUM_OF_JOBS="$key"; NEXT_IS_AFL_MAX_JOB=false;
+      elif $NEXT_IS_AFL_SESSION; then :;
+        AFL_SESSION="$key"; NEXT_IS_AFL_SESSION=false;
+      elif $NEXT_IS_AFL_SLEEP; then :;
+        AFL_SLEEP="$key"; NEXT_IS_AFL_SLEEP=false;
+      elif [ "$key" = "--jobs" ] || [ "$key" = "-j" ] ; then :;
+        NEXT_IS_AFL_MAX_JOB=true;
+      elif [ "$key" = "--session" ]; then :;
+        NEXT_IS_AFL_SESSION=true;
+      elif [ "$key" = "--sleep" ] || [ "$key" = "-s" ]; then :;
+        NEXT_IS_AFL_SLEEP=true;
+      elif [ "$key" = "-M" ]; then :;
+        AFL_START_MASTER_INSTANCE=true; # FIXME: change description
+      elif [ "$key" = "-S" ]; then :; # always used internally
+        printf 'The parameter %s is not supported by afl-pfuzz (they are supported by afl-fuzz)\n\n' "$key" >&2
+        help >&2;
+        exit 1;
+      elif is_help_param "$key"; then :;
+        help;
+        exit 0;
+      else
+        set -- "$@" "$key";
+      fi
+      if [ "$key" = "--" ]; then :;
+        PARSE=false;
+      fi
+    fi
+  done
+
+  if   [ ! -n "${AFL_NUM_OF_JOBS+x}" ]; then :;
+    AFL_NUM_OF_JOBS="$(afl-gotcpu 2>&1  | grep -c AVAILABLE)"
+  fi
+
+  # FIXME: max(AFL_NUM_OF_JOBS, 1) -1
+  start_fuzz_env "$AFL_SESSION" "$AFL_START_MASTER_INSTANCE" "$AFL_NUM_OF_JOBS" "$AFL_SLEEP" "$@";
+}
+
+main "$@";

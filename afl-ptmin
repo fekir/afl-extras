@@ -1,0 +1,102 @@
+#!/bin/sh
+
+#   Copyright 2019 Federico Kircheis
+#
+#   Licensed under the Apache License, Version 2.0 (the "License");
+#   you may not use this file except in compliance with the License.
+#   You may obtain a copy of the License at
+#
+#       http://www.apache.org/licenses/LICENSE-2.0
+#
+#   Unless required by applicable law or agreed to in writing, software
+#   distributed under the License is distributed on an "AS IS" BASIS,
+#   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+#   See the License for the specific language governing permissions and
+#   limitations under the License.
+
+set -o errexit
+set -o nounset
+
+findnonemptyfiles0(){
+  find "$1" -type f ! -size 0 -printf '%f\0';
+}
+
+# FIXME: does it work if filename contains '{}'?
+parallel_tmin0(){
+  IN="$1"; shift;
+  OUT="$1"; shift;
+  if command -v parallel > /dev/null 2>&1; then :;
+    parallel -0 afl-tmin -i "$IN/{}" -o "$OUT/{}" "$@";
+  else :; # fallback, xargs is always avaiable, right?
+    printf 'parallel not available, falling back to xargs' >&2;
+    xargs -0 -P "$(grep -c processor /proc/cpuinfo)" -I '{}' afl-tmin -i "$IN/{}" -o "$OUT/{}" "$@";
+  fi
+}
+
+tmin_dir(){
+  in="$1"; shift;
+  out="$1"; shift;
+  if [ ! -d "$out" ]; then :;
+    mkdir "$out";
+  fi
+  # empty files handled separately, maybe not necessary anymore
+  find "$in" -type f -size 0 -printf '%f\0' | xargs -0 -I '{}' touch "$out/{}";
+  findnonemptyfiles0 "$in" | parallel_tmin0 "$in" "$out" "$@";
+}
+
+help(){
+  # FIXME: afl-tmin exits with error
+  afl-tmin 2>&1 | sed -e '${/^$/d;}' \
+                      -e '1s;^;afl-ptmin, based on ;' -e '3s;afl-tmin;afl-ptmin;' \
+                      -e 's;-i file;-i dir ;' -e 's;-o file;-o dir ;' \
+                      ;
+}
+
+is_help_param(){
+  [ "$1" = "-h" ] || [ "$1" = "--help" ] || [ "$1" = "h" ] || [ "$1" = "help" ] || [ "$1" = "?" ];
+}
+
+main(){
+  unset AFL_PTMIN_IN
+  unset AFL_PTMIN_OU
+  [ $# -eq 0 ] && set -- "$@" '?';
+
+  NEXT_IS_AFL_PTMIN_IN=false;
+  NEXT_IS_AFL_PTMIN_OU=false;
+  PARSE=true;
+  for key in "$@"; do :;
+    shift
+    if ! $PARSE; then :;
+      set -- "$@" "$key";
+    else
+      if   $NEXT_IS_AFL_PTMIN_IN; then :;
+        AFL_PTMIN_IN="$key"; NEXT_IS_AFL_PTMIN_IN=false;
+      elif $NEXT_IS_AFL_PTMIN_OU; then :;
+        AFL_PTMIN_OU="$key"; NEXT_IS_AFL_PTMIN_OU=false;
+      elif [ "$key" = "-i" ]; then :;
+        NEXT_IS_AFL_PTMIN_IN=true;
+      elif [ "$key" = "-o" ]; then :;
+        NEXT_IS_AFL_PTMIN_OU=true;
+      elif is_help_param "$key"; then :;
+        help;
+        exit 0;
+      else
+        set -- "$@" "$key";
+      fi
+      if [ "$key" = "--" ]; then :;
+        PARSE=false;
+      fi
+    fi
+  done
+
+  if   [ ! -n "${AFL_PTMIN_IN+x}" ]; then :;
+    printf 'Missing input directory\n'  >&2; exit 1;
+  elif [ ! -n "${AFL_PTMIN_IN+x}" ] ; then :;
+    printf 'Missing output directory\n' >&2; exit 1;
+  fi
+  tmin_dir "$AFL_PTMIN_IN" "$AFL_PTMIN_OU" "$@";
+}
+
+main "$@";
+
+# consider alternative design: add option to afl to enable/disable parallel processing
