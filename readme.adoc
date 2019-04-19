@@ -1,0 +1,9 @@
+Collection of script for helping while fuzzing targets
+
+== afl-ptmin
+
+Executes `afl-tmin` in parallel with input/output directories
+
+== afl-pfuzz
+
+Executes multiple `afl-fuzz` instances of `afl-fuzz` inside a `tmux` session.
