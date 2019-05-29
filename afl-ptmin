@@ -28,7 +28,7 @@ parallel_tmin0(){
   if command -v parallel > /dev/null 2>&1; then :;
     parallel -0 afl-tmin -i "$IN/{}" -o "$OUT/{}" "$@";
   else :; # fallback, xargs is always avaiable, right?
-    printf 'parallel not available, falling back to xargs' >&2;
+    printf 'parallel not available, falling back to xargs\n' >&2;
     xargs -0 -P "$(grep -c processor /proc/cpuinfo)" -I '{}' afl-tmin -i "$IN/{}" -o "$OUT/{}" "$@";
   fi
 }
