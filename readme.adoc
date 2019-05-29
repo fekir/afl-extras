@@ -4,6 +4,30 @@ Collection of script for helping while fuzzing targets
 
 Executes `afl-tmin` in parallel with input/output directories
 
+
+Example usage:
+
+----
+afl-ptmin -i input-dir -o output-dir -- target [...]
+----
+
 == afl-pfuzz
 
 Executes multiple `afl-fuzz` instances of `afl-fuzz` inside a `tmux` session.
+
+
+Example usage:
+
+----
+afl-pfuzz -i input-dir -o output-dir --session session-name
+----
+
+== collect-data
+
+A script for gathering non-duplicate data from multiple folder into one.
+
+Example usage:
+
+----
+collect-data --input input-dir1 input-dir2 --output output-dir
+----

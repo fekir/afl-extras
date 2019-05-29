@@ -1,0 +1,275 @@
+#!/bin/sh
+
+set -o errexit
+set -o nounset
+
+cleanbackups(){
+  # FIXME: avoid shell for every file, maybe with print and xargs...
+  #find "$1" -name '*\.~*' -type f -exec sh -c 'mv --no-clobber "$1" "${1%%.~*}"' - '{}' \;
+
+  # faster than find+subshell, but depends on globbing behaviour, and does not handle subdirectories...
+  for file in "$1"/*.~*; do :;
+    mv --no-clobber "$file" "${file%%.~*}" 2>/dev/null || true;
+  done
+}
+
+# on posix systems, --binary is not necessary, but on other platforms like windows (cygwin), it is (or might be)
+# cygwin defaults to it, meaning tht the output contains '*', while on linux system not (contains another ' ')
+# Thus always using --binary avoids special-casing
+select_unique0(){
+  sort -z | uniq -z | xargs --no-run-if-empty -0 "$1" --zero --binary | sort -z | uniq -z "--check-chars=$2" | cut -z -d'*' -f2-;
+}
+
+create_new0(){
+  xargs --no-run-if-empty -0 "$1" --backup=numbered --suffix=.orig --target-directory="$2";
+}
+
+unique_and_flatten_all(){
+  TOOL="$1"; shift;
+  ALG="$1"; shift;
+  ALG_LEN="$1"; shift;
+  OUTPUT="$1"; shift;
+  INPUT_EQ_OUTPUT="$1"; shift;
+
+  OUTPUT_TMP="$(mktemp -p "$OUTPUT" -d tmp.XXXXXX.u)";
+  # why "*${OUTPUT_TMP}*" instead of "$OUTPUT_TMP" since it is an abs path?
+  find "$@" -type f -not -path "*${OUTPUT_TMP}*" -print0 | select_unique0 "$ALG" "$ALG_LEN" | create_new0 "$TOOL" "$OUTPUT_TMP";
+
+  # those where duplicates
+  find "$OUTPUT" -mindepth 1 -maxdepth 1 -not -path "$OUTPUT_TMP" -exec rm -rf '{}' +;
+  # content in "$OUTPUT" is flat
+  find "$OUTPUT_TMP" -type f -exec mv --no-clobber --target-directory "$OUTPUT" '{}' + ;
+  rmdir "$OUTPUT_TMP"; # there should be nothing left
+  cleanbackups "$OUTPUT"; # slow.... but optional, since the ~ at the end does not harm, but they'll accumulate and produce always longer names
+}
+find0_from_afl_folders(){
+  find "$1" -name 'id*' -path "$2" -not -path '*state*' -type f -print0;
+}
+
+afl_structure(){
+  TOOL="$1"; shift;
+  ALG="$1"; shift;
+  ALG_LEN="$1"; shift;
+  OUTPUT="$1"; shift;
+  INPUT_EQ_OUTPUT="$1"; shift;
+
+  # not trapping for deleting since moving files (even on cp)
+  OUTPUT_QUEUE="$(  mktemp -p "$OUTPUT" -d tmp.XXXXXX.q)";
+  OUTPUT_CRASHES="$(mktemp -p "$OUTPUT" -d tmp.XXXXXX.c)";
+  OUTPUT_HANGS="$(  mktemp -p "$OUTPUT" -d tmp.XXXXXX.h)";
+
+  [ -d "$OUTPUT_QUEUE" ] || mkdir "$OUTPUT_QUEUE";
+  [ -d "$OUTPUT_CRASHES" ] || mkdir "$OUTPUT_CRASHES";
+  [ -d "$OUTPUT_HANGS" ] || mkdir "$OUTPUT_HANGS";
+
+  find0_from_afl_folders "$@" "*queue*"   | select_unique0 "$ALG" "$ALG_LEN" | create_new0 "$TOOL" "$OUTPUT_QUEUE";
+  find0_from_afl_folders "$@" "*crashes*" | select_unique0 "$ALG" "$ALG_LEN" | create_new0 "$TOOL" "$OUTPUT_CRASHES";
+  find0_from_afl_folders "$@" "*hangs*"   | select_unique0 "$ALG" "$ALG_LEN" | create_new0 "$TOOL" "$OUTPUT_HANGS";
+
+  find "$OUTPUT" -mindepth 1 -maxdepth 1 -not -path "*${OUTPUT_QUEUE}*" -not -path "*${OUTPUT_CRASHES}*" -not -path "*${OUTPUT_HANGS}*" -exec rm -rf {} +;
+
+  mv "$OUTPUT_QUEUE"   "$OUTPUT/queue";
+  mv "$OUTPUT_CRASHES" "$OUTPUT/crashes";
+  mv "$OUTPUT_HANGS"   "$OUTPUT/hangs";
+
+  cleanbackups "$OUTPUT/queue";
+  cleanbackups "$OUTPUT/crashes";
+  cleanbackups "$OUTPUT/hangs";
+}
+
+test_val(){
+  if test $# -lt 2; then :;
+    printf 'Missing value for %s\n' "$1" >&2;
+    exit 1;
+  fi
+}
+
+DEFAULT_HASH_TOOL='md5sum';
+DEFAULT_AFL_FOLDER='auto';
+DEFAULT_TOOL='cp';
+
+help(){
+  printf '%s\n' "${0##*/}";
+  printf '\nParameters:\n';
+  printf '\t-i|--input    input directory, this parameter is required\n';
+  printf '\t-o|--output   output directory, this parameter is required\n';
+  printf '\t--hash-tool   hashtools, defaults to %s\n' "$DEFAULT_HASH_TOOL";
+  printf '\t--operation   cp, mv or mv-delete, defaults to %s\n' "$DEFAULT_TOOL";
+  printf '\t--afl-folder  "true", "false" and "auto", defaults to %s.\n' "$DEFAULT_AFL_FOLDER";
+  printf '\n'
+  printf '\n--hash-tool:\n';
+  printf ' It needs to work like %s.\n' "$DEFAULT_HASH_TOOL";
+  printf ' It is invoked as "hash-tool --zero --binary FILE..." ie it must support "--zero" and "--binary" as parameter\n';
+  printf ' and multiple files\n';
+  printf ' The output is the hash value followed by a space, an asterisk, the unescaped file name and NUL (not newline).\n';
+  printf '\n--operation:\n';
+  printf ' If the input and output folder are the same, only unique files are preserved, indipendentyl of this parameter.\n';
+  printf ' Otherwise with cp the input folder is left intact, while with mv duplicates or ignored files are left in place.\n';
+  printf ' With mv-delete the behavirous is as with mv, but leftovers are deleted afterwards.\n'
+  printf '\n--afl-folder:\n';
+  printf ' If the input folder has a structure similar to those created by afl-fuzz, then the structure of queue,\n';
+  printf ' hangs and crashes is preserved, and unique files are placed in the corresponding directory.\n';
+  printf ' Valid parameters are "true", "false" and "auto" for auto-detection (default value is %s).\n' "$DEFAULT_AFL_FOLDER";
+}
+
+# FIXME: with multiple inputs, there might be some duplicate files
+# The fix is to let find run on all folders at once, but then mv might fail on symlinks...
+# => state in the documentation that symlinks are not truly supported (or add option for it)
+# FIXME: add option to copy everything (avoid hashing and so on)
+
+# FIXME: think about multiple inputs, and mixing afl with non-afl and input=output
+# UC1: {in1,     in2,     out    } -> flat everything
+# UC2: {in1=afl, in2,     out    } -> ??? trigger error, unless --afl-folder=false
+# UC3: {in1=afl, in2=afl, out    } -> --afl-folder=auto -> returns true
+# UC4: {in1=afl, in2=afl, out=in1} -> --afl-folder=auto -> returns true
+# UC5: {in1,     in2,     out=in1} -> flat everything in subfolder of out1, then move up
+
+main(){
+  AFL_FOLDER="$DEFAULT_AFL_FOLDER";
+  HASH_TOOL="$DEFAULT_HASH_TOOL";
+  TOOL="$DEFAULT_TOOL";
+  [ $# -eq 0 ] && set -- "$@" '?';
+  while test $# -gt 0; do :;
+    key="$1";
+    case "$key" in
+      -h|h|--help|help|\?)
+        help;
+        exit 0;
+        ;;
+      -i|--input)
+        test_val "$@";
+        shift; INPUT="$1";;
+      --input=*)
+        INPUT="${key##--input=}";;
+      -o|--output)
+        test_val "$@";
+        shift; OUTPUT="$1";;
+      --output=*)
+        OUTPUT="${key##--output=}";;
+      --hash-tool)
+        test_val "$@";
+        shift; HASH_TOOL="$1";;
+      --hash-tool=*)
+        HASH_TOOL="${key##--hash-tool=}";;
+      --operation)
+        test_val "$@";
+        shift; TOOL="$1";;
+      --operation=*)
+        TOOL="${key##--operation=}";;
+      --afl-folder)
+        test_val "$@";
+        shift; AFL_FOLDER="$1";;
+      --afl-folder=*)
+        AFL_FOLDER="${key##--afl-folder=}";;
+      --inputs)
+        if [ -n "${INPUT+x}" ]; then :;
+          printf 'Do not use --input and --inputs together\n\n' >&2;
+          exit 1;
+        fi
+        test_val "$@";
+        break;
+        ;;
+      *)
+        printf 'Unrecognized parameter: "%s"\n' "$key" >&2;
+        exit 1;;
+      esac
+    shift;
+  done;
+
+  if [ -n "${INPUT+x}" ]; then :;
+    set -- "$@" "$INPUT"
+  elif [ $# -eq 0 ]; then
+    printf 'Missing the --input/--inputs parameter\n\n' >&2;
+    help >&2;
+    exit 1;
+  fi
+
+
+  for INPUT in "$@"; do :;
+    if  [ ! -d "$INPUT" ]; then :;
+       printf 'The --input parameter "%s" does not point to a directory.\n\n' "$INPUT" >&2;
+       help >&2;
+       exit 1;
+    fi
+  done;
+
+  if    [ ! -n "${OUTPUT+x}" ]; then :;
+    printf 'Missing the --output parameter.\n\n' >&2;
+    help >&2;
+    exit 1;
+  fi
+
+  HASH_LEN="$(($(printf '' | "$HASH_TOOL" --zero --binary | cut -d' ' -f1 | wc -m)-1))";
+  if [ "$HASH_LEN" -le 0 ]; then :;
+    printf 'Either "%s" is not avaiable, or it does not behave like md5sum, sha1sum et all.\n\n' "$HASH_TOOL" >&2;
+    help >&2;
+    exit 1;
+  fi
+
+  DELETE_INPUT=false;
+  if   [ "$TOOL" = 'mv-delete' ]; then :;
+    DELETE_INPUT=true;
+  elif [ "$TOOL" != 'mv' ] && [ "$TOOL" != 'cp' ]; then :;
+    printf 'Valid values for --operation are mv, cp and mv-delete.\n\n' >&2;
+    help >&2;
+  fi
+
+  # FIXME: changing TOOL with mulitple folders, does it work?
+  # if in=out, then copy does not make sense here, and mv-and-delete neither
+  INPUT_EQ_OUTPUT=false;
+  for INPUT in "$@"; do
+    if [ "$INPUT" = "$OUTPUT" ]; then :; #micro-opt, for simple cases
+      if [ "$TOOL" = "cp" ]; then :;
+        printf 'Copy content, but at least one output folder is the same as input folder, use tool=mv\n';
+        exit 1;
+      fi
+      INPUT_EQ_OUTPUT=true;
+    elif [ "$(readlink -f -- "$INPUT")" = "$(readlink -f -- "$OUTPUT")" ]; then :;
+      if [ "$TOOL" = "cp" ]; then :;
+        printf 'Copy content, but at least one output folder is the same as input folder, use tool=mv\n';
+        exit 1;
+      fi
+      INPUT_EQ_OUTPUT=true;
+    fi
+  done;
+
+  [ -d "$OUTPUT" ] || mkdir "$OUTPUT";
+
+  if   [ "$AFL_FOLDER" = "true" ]; then :;
+    min_num_of_queue=1;
+  elif [ "$AFL_FOLDER" = "auto" ]; then :;
+    n=0;
+    n_afl=0;
+    for INPUT in "$@"; do :;
+      min_num_of_queue_i="$(find "$INPUT" -name queue -type d -printf . -quit | wc -l)";
+      if [ "$min_num_of_queue_i" -gt 0 ]; then :;
+        n_afl=$((n_afl+1));
+      fi
+      n=$((n+1));
+    done;
+    if [ $n_afl -ne $n ] && [ $n_afl -ne 0 ]; then :;
+      printf 'Inconsistent state, some folders are afl, others not, set --afl-folder=false to continue\n';
+      exit 1;
+    fi
+    min_num_of_queue=$n_afl;
+  elif [ "$AFL_FOLDER" = "false" ]; then :;
+    min_num_of_queue=0;
+  else :;
+    printf 'Unrecognized value for --afl-folder: "%s".\n\n' "$AFL_FOLDER">&2;
+    help >&2;
+    exit 1;
+  fi
+
+  if [ "$min_num_of_queue" -gt 0 ] ; then :;
+    afl_structure          "$TOOL" "$HASH_TOOL" "$HASH_LEN" "$OUTPUT" $INPUT_EQ_OUTPUT "$@";
+  else :;
+    unique_and_flatten_all "$TOOL" "$HASH_TOOL" "$HASH_LEN" "$OUTPUT" $INPUT_EQ_OUTPUT "$@";
+  fi
+
+  # FIXME: multiple folder and input=output!!!
+  #if $DELETE_INPUT; then :;
+  #  rm -rf "$INPUT";
+  #fi
+}
+
+main "$@";
