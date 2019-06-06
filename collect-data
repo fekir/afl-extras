@@ -105,7 +105,7 @@ help(){
   printf '\n--operation:\n';
   printf ' If the input and output folder are the same, only unique files are preserved, indipendentyl of this parameter.\n';
   printf ' Otherwise with cp the input folder is left intact, while with mv duplicates or ignored files are left in place.\n';
-  printf ' With mv-delete the behavirous is as with mv, but leftovers are deleted afterwards.\n'
+  printf ' With mv-delete the behaviours is as with mv, but leftovers are deleted afterwards.\n'
   printf '\n--afl-folder:\n';
   printf ' If the input folder has a structure similar to those created by afl-fuzz, then the structure of queue,\n';
   printf ' hangs and crashes is preserved, and unique files are placed in the corresponding directory.\n';
