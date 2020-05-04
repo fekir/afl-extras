@@ -35,7 +35,7 @@ test_copy_simple(){
   mkdir "$TDIR" "$TDIR/a";
 
   cfiles=10;
-  sequence="$(seq -f %02.f 0 "$(($cfiles-1))")"
+  sequence="$(seq -f %02.f 0 "$((cfiles-1))")"
   uniq_files "$sequence" "$TDIR/a"
   "$AFL_COLLECT" --input "$TDIR/a" --output "$TDIR/b";
 
@@ -54,7 +54,7 @@ test_copy_simple_dup(){
   mkdir "$TDIR" "$TDIR/a";
 
   cfiles=10;
-  sequence="$(seq -f %02.f 0 "$(($cfiles-1))")"
+  sequence="$(seq -f %02.f 0 "$((cfiles-1))")"
   uniq_files "$sequence" "$TDIR/a"
   printf '%s\n' "00" >"$TDIR/a/0"
   "$AFL_COLLECT" --input "$TDIR/a" --output "$TDIR/b";
@@ -77,7 +77,7 @@ test_copy_self(){
   mkdir "$TDIR" "$TDIR/a";
 
   cfiles=10;
-  sequence="$(seq -f %02.f 0 "$(($cfiles-1))")"
+  sequence="$(seq -f %02.f 0 "$((cfiles-1))")"
   uniq_files "$sequence" "$TDIR/a"
   "$AFL_COLLECT" --input "$TDIR/a" --output "$TDIR/a" --operation mv;
 
@@ -95,7 +95,7 @@ test_copy_self_dup(){
   mkdir "$TDIR" "$TDIR/a";
 
   cfiles=10;
-  sequence="$(seq -f %02.f 0 "$(($cfiles-1))")"
+  sequence="$(seq -f %02.f 0 "$((cfiles-1))")"
   uniq_files "$sequence" "$TDIR/a"
   printf '%s\n' "00" >"$TDIR/a/0"
   "$AFL_COLLECT" --input "$TDIR/a" --output "$TDIR/a" --operation mv;
@@ -120,7 +120,7 @@ test_copy_simple_twice_eq(){
   mkdir "$TDIR" "$TDIR/a.1" "$TDIR/a.2";
 
   cfiles=10;
-  sequence="$(seq -f %02.f 0 "$(($cfiles-1))")"
+  sequence="$(seq -f %02.f 0 "$((cfiles-1))")"
   uniq_files "$sequence" "$TDIR/a.1"
   uniq_files "$sequence" "$TDIR/a.2"
   # FIXME: check with new version
@@ -141,10 +141,10 @@ test_copy_simple_twice_ne(){
   mkdir "$TDIR" "$TDIR/a.1" "$TDIR/a.2";
 
   cfiles=10;
-  sequence="$(seq -f %02.f 0 "$(($cfiles-1))")"
+  sequence="$(seq -f %02.f 0 "$((cfiles-1))")"
   uniq_files "$sequence" "$TDIR/a.1"
   for f in $sequence; do :;
-    printf '%s\n' "$(($cfiles-${f#0}))" >"$TDIR/a.2/$f";
+    printf '%s\n' "$((cfiles-${f#0}))" >"$TDIR/a.2/$f";
   done
   # FIXME: check with new version
   "$AFL_COLLECT" --input "$TDIR/a.1" --input "$TDIR/a.2" --output "$TDIR/b";
