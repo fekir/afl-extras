@@ -28,9 +28,14 @@ start_master(){
 
 start_slave(){
   FUZZENV="$1"; shift;
-  SLAVE="$1"; shift;
+  SLAVE="$1"; shift;  
+  schedulers=("fast" "coe" "lin" "quad" "exploit" "mmopt" "rare" "seek")
+  selected=${schedulers[$RANDOM % ${#schedulers[@]} ]}
+  
+  if (( RANDOM % 2 )); then mopt=""; else mopt="-L 0"; fi
+
   tmux new-window -n "$SLAVE" -t "$FUZZENV";
-  tmux send-keys -t "$FUZZENV":"$SLAVE"  " afl-fuzz -S \"$SLAVE\" $(printf '"%s" ' "$@")" C-m;
+  tmux send-keys -t "$FUZZENV":"$SLAVE"  " afl-fuzz $mopt -p $selected -S \"$SLAVE\" $(printf '"%s" ' "$@")" C-m;
 }
 
 start_fuzz_env(){
